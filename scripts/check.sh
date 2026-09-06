@@ -13,6 +13,17 @@ if ! cmp -s install.sh docs/install.sh; then
 fi
 
 bash install.sh --status >/dev/null
+systemd-analyze verify systemd/antigravity-linux-update.service systemd/antigravity-linux-update.timer
+
+if ! grep -q '/usr/local/lib/antigravity-linux/install.sh' install.sh; then
+  echo "install.sh must install and use a local update helper." >&2
+  exit 1
+fi
+
+if ! grep -q 'antigravity-linux-update.timer' install.sh; then
+  echo "install.sh must install the systemd update timer." >&2
+  exit 1
+fi
 
 if ! grep -q '/opt/antigravity.new' install.sh || ! grep -q '/opt/antigravity-ide.new' install.sh; then
   echo "install.sh uninstall must remove interrupted .new staging directories." >&2

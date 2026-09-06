@@ -235,6 +235,8 @@ PY
 safe_replace_dir() {
   local newdir="$1"
   local target="$2"
+  # Retain exactly one known-good rollback directory. The new directory is
+  # fully staged before the active installation is moved out of the way.
   rm -rf "${target}.previous"
   if [ -d "$target" ]; then
     mv "$target" "${target}.previous"
@@ -436,20 +438,22 @@ PY
 }
 
 install_manager_command() {
-  local installer_url="$INSTALLER_URL"
-  cat > /usr/local/bin/antigravity-linux <<SH
+  local source="${BASH_SOURCE[0]:-}"
+  [ -n "$source" ] && [ -f "$source" ] || err "Run a downloaded or checked-out install.sh; piped execution is intentionally unsupported."
+  local source_dir
+  source_dir=$(cd "$(dirname "$source")" && pwd)
+  install -Dm0755 "$source" /usr/local/lib/antigravity-linux/install.sh
+  install -Dm0644 "$source_dir/systemd/antigravity-linux-update.service" /usr/local/lib/antigravity-linux/systemd/antigravity-linux-update.service
+  install -Dm0644 "$source_dir/systemd/antigravity-linux-update.timer" /usr/local/lib/antigravity-linux/systemd/antigravity-linux-update.timer
+
+  cat > /usr/local/bin/antigravity-linux <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-SCRIPT_URL="$installer_url"
-if [ -z "\$SCRIPT_URL" ]; then
-  echo "No installer URL was stored." >&2
-  echo "Reinstall with ANTIGRAVITY_LINUX_INSTALLER_URL set, or run install.sh locally." >&2
-  exit 1
-fi
-if [ "\$(id -u)" -eq 0 ]; then
-  curl -fsSL "\$SCRIPT_URL" | env ANTIGRAVITY_LINUX_INSTALLER_URL="\$SCRIPT_URL" bash -s -- "\$@"
+helper=/usr/local/lib/antigravity-linux/install.sh
+if [ "$(id -u)" -eq 0 ]; then
+  exec "$helper" "$@"
 else
-  curl -fsSL "\$SCRIPT_URL" | sudo -E env ANTIGRAVITY_LINUX_INSTALLER_URL="\$SCRIPT_URL" bash -s -- "\$@"
+  exec sudo "$helper" "$@"
 fi
 SH
   chmod +x /usr/local/bin/antigravity-linux
@@ -463,6 +467,15 @@ SH
 exec antigravity-linux update --ide "$@"
 SH
   chmod +x /usr/local/bin/update-antigravity-ide
+}
+
+install_update_timer() {
+  local source_dir
+  source_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  install -Dm0644 "$source_dir/systemd/antigravity-linux-update.service" /etc/systemd/system/antigravity-linux-update.service
+  install -Dm0644 "$source_dir/systemd/antigravity-linux-update.timer" /etc/systemd/system/antigravity-linux-update.timer
+  systemctl daemon-reload
+  systemctl enable --now antigravity-linux-update.timer
 }
 
 print_status() {
@@ -522,6 +535,8 @@ print_success_summary() {
   log "Manage:"
   log "- Status:    antigravity-linux --status"
   log "- Update:    sudo antigravity-linux update --all"
+  log "- Update log: journalctl -u antigravity-linux-update.service"
+  log "- Timer:     systemctl status antigravity-linux-update.timer"
   log "- Uninstall: sudo antigravity-linux --uninstall"
   if [ -z "$INSTALLER_URL" ]; then
     log ""
@@ -535,7 +550,10 @@ print_success_summary() {
 
 uninstall_all() {
   require_root_or_reexec
-  rm -rf /opt/antigravity /opt/antigravity.new /opt/antigravity.previous /opt/antigravity-ide /opt/antigravity-ide.new /opt/antigravity-ide.previous
+  systemctl disable --now antigravity-linux-update.timer 2>/dev/null || true
+  rm -f /etc/systemd/system/antigravity-linux-update.service /etc/systemd/system/antigravity-linux-update.timer
+  systemctl daemon-reload
+  rm -rf /opt/antigravity /opt/antigravity.new /opt/antigravity.previous /opt/antigravity-ide /opt/antigravity-ide.new /opt/antigravity-ide.previous /usr/local/lib/antigravity-linux
   rm -f /usr/local/bin/antigravity /usr/local/bin/antigravity-ide /usr/local/bin/update-antigravity /usr/local/bin/update-antigravity-ide /usr/local/bin/antigravity-linux
   rm -f /usr/share/applications/antigravity.desktop /usr/share/applications/antigravity-ide.desktop
   rm -f /usr/share/icons/hicolor/512x512/apps/antigravity.png /usr/share/icons/hicolor/512x512/apps/antigravity-ide.png
@@ -579,6 +597,7 @@ main() {
     fi
   fi
   install_manager_command
+  install_update_timer
   print_success_summary
 }
 
