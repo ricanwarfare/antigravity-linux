@@ -468,6 +468,11 @@ install_manager_command() {
 #!/usr/bin/env bash
 set -euo pipefail
 helper=/usr/local/lib/antigravity-linux/install.sh
+case "${1:-}" in
+  --status|--print-downloads|-h|--help)
+    exec "$helper" "$@"
+    ;;
+esac
 if [ "$(id -u)" -eq 0 ]; then
   exec "$helper" "$@"
 else
