@@ -1,0 +1,8 @@
+[Unit]
+Description=Update Google Antigravity from its official Linux tarball
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock -n /run/antigravity-linux-update.lock /usr/local/lib/antigravity-linux/install.sh update --desktop --no-apt --yes

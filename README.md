@@ -43,35 +43,18 @@ This project does **not** mirror, modify, or redistribute Google Antigravity. Th
 ## Minimum Requirements
 > `glibc >= 2.28, glibcxx >= 3.4.25 (e.g. Ubuntu 20. Debian 10, Fedora 36, RHEL 8)`
 
-## Quick install from GitHub Pages
+## Install (reviewed local file)
 
-Install Antigravity 2.0 and the IDE:
-
-```bash
-INSTALLER_URL="https://opensnap.github.io/antigravity/install.sh"
-curl -fsSL "$INSTALLER_URL" | sudo -E env ANTIGRAVITY_LINUX_INSTALLER_URL="$INSTALLER_URL" bash -s -- --all
-```
-
-Install only Antigravity 2.0 desktop app:
+Do **not** pipe an installer into a root shell. Clone the fork, review the pinned checkout, then run it:
 
 ```bash
-INSTALLER_URL="https://opensnap.github.io/antigravity/install.sh"
-curl -fsSL "$INSTALLER_URL" | sudo -E env ANTIGRAVITY_LINUX_INSTALLER_URL="$INSTALLER_URL" bash -s --
+git clone https://github.com/ricanwarfare/antigravity-linux.git
+cd antigravity-linux
+bash scripts/check.sh
+sudo bash install.sh --desktop
 ```
 
-Install only Antigravity IDE:
-
-```bash
-INSTALLER_URL="https://opensnap.github.io/antigravity/install.sh"
-curl -fsSL "$INSTALLER_URL" | sudo -E env ANTIGRAVITY_LINUX_INSTALLER_URL="$INSTALLER_URL" bash -s -- --ide
-```
-
-## Quick install from raw GitHub
-
-```bash
-INSTALLER_URL="https://raw.githubusercontent.com/opensnap/antigravity/main/install.sh"
-curl -fsSL "$INSTALLER_URL" | sudo -E env ANTIGRAVITY_LINUX_INSTALLER_URL="$INSTALLER_URL" bash -s -- --all
-```
+The install copies the reviewed helper to `/usr/local/lib/antigravity-linux/`, so future updates use that local copy—not mutable code fetched from GitHub. A systemd timer checks daily at 04:17, with up to 15 minutes of jitter.
 
 ## Update
 
@@ -93,18 +76,12 @@ IDE only:
 sudo update-antigravity-ide
 ```
 
-## Status
-
-When installed from a published URL:
+## Status and logs
 
 ```bash
 antigravity-linux --status
-```
-
-For local-checkout installs without a stored installer URL, use the local script:
-
-```bash
-bash install.sh --status
+systemctl status antigravity-linux-update.timer
+journalctl -u antigravity-linux-update.service
 ```
 
 ## Uninstall
