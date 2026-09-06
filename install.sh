@@ -126,7 +126,26 @@ resolve_main_bundle() {
   local tmpdir="$1"
   local html="$tmpdir/download.html"
   local js="$tmpdir/download.js"
-  curl -fsSL --compressed --retry 3 -o "$html" "$DOWNLOAD_PAGE"
+  local user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+  # Google serves an incomplete document to curl's default user agent. A normal
+  # desktop-browser user agent yields the official links directly, which is
+  # simpler and less brittle than depending on Astro bundle names.
+  curl -fsSL --compressed --retry 3 -A "$user_agent" -o "$html" "$DOWNLOAD_PAGE"
+  if python3 - "$html" "$AG_PLATFORM" <<'PY' >/dev/null
+import re, sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text(errors='replace').replace("\\/", "/")
+platform = re.escape(sys.argv[2])
+raise SystemExit(0 if re.search(r'https?://[^"\s<>)]*/' + platform + r'/Antigravity(?:\.tar\.gz|%20IDE\.tar\.gz)', text) else 1)
+PY
+  then
+    printf '%s\n' "$html"
+    return
+  fi
+
+  # Compatibility fallback for an older page layout that exposes links only in
+  # an Astro bundle.
   local main_js_url
   main_js_url=$(python3 - "$html" "$DOWNLOAD_PAGE" <<'PY'
 import re, sys
@@ -134,7 +153,6 @@ from pathlib import Path
 from urllib.parse import urljoin
 html = Path(sys.argv[1]).read_text(errors='replace')
 page = sys.argv[2]
-# Prefer the application bundle that contains the download data.
 matches = re.findall(r'(?:src|href)=["\']([^"\']*main-[^"\']+\.js)["\']', html)
 if not matches:
     matches = re.findall(r'(?:src|href)=["\']([^"\']+\.js)["\']', html)
@@ -143,7 +161,7 @@ if not matches:
 print(urljoin(page, matches[-1]))
 PY
 )
-  curl -fsSL --compressed --retry 3 -o "$js" "$main_js_url"
+  curl -fsSL --compressed --retry 3 -A "$user_agent" -o "$js" "$main_js_url"
   printf '%s\n' "$js"
 }
 
@@ -159,7 +177,7 @@ platform = sys.argv[2]
 product = sys.argv[3]
 
 # Normalize escaped slashes sometimes found in JS string literals.
-text = bundle.replace('\\/', '/')
+text = bundle.replace("\\/", "/")
 
 def fail(msg):
     raise SystemExit(msg)
@@ -582,7 +600,7 @@ main() {
   mkdir -p "$tmp_parent"
   local tmpdir
   tmpdir=$(mktemp -d "$tmp_parent/$PROJECT_NAME.XXXXXX")
-  trap 'rm -rf "$tmpdir"' EXIT
+  trap "rm -rf -- $(printf '%q' "$tmpdir")" EXIT
   local js
   js=$(resolve_main_bundle "$tmpdir")
   [ "$INSTALL_DESKTOP" -eq 1 ] && install_desktop_app "$tmpdir" "$js"
