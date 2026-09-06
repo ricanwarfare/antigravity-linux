@@ -460,9 +460,14 @@ install_manager_command() {
   [ -n "$source" ] && [ -f "$source" ] || err "Run a downloaded or checked-out install.sh; piped execution is intentionally unsupported."
   local source_dir
   source_dir=$(cd "$(dirname "$source")" && pwd)
-  install -Dm0755 "$source" /usr/local/lib/antigravity-linux/install.sh
-  install -Dm0644 "$source_dir/systemd/antigravity-linux-update.service" /usr/local/lib/antigravity-linux/systemd/antigravity-linux-update.service
-  install -Dm0644 "$source_dir/systemd/antigravity-linux-update.timer" /usr/local/lib/antigravity-linux/systemd/antigravity-linux-update.timer
+  # An update runs this already-installed copy. Reinstalling a file over itself
+  # makes GNU install fail, which previously caused no-op scheduled updates to
+  # exit unsuccessfully.
+  if [ "$(readlink -f "$source")" != "/usr/local/lib/antigravity-linux/install.sh" ]; then
+    install -Dm0755 "$source" /usr/local/lib/antigravity-linux/install.sh
+    install -Dm0644 "$source_dir/systemd/antigravity-linux-update.service" /usr/local/lib/antigravity-linux/systemd/antigravity-linux-update.service
+    install -Dm0644 "$source_dir/systemd/antigravity-linux-update.timer" /usr/local/lib/antigravity-linux/systemd/antigravity-linux-update.timer
+  fi
 
   cat > /usr/local/bin/antigravity-linux <<'SH'
 #!/usr/bin/env bash
