@@ -18,7 +18,7 @@ DO_STATUS=0
 DO_PRINT_DOWNLOADS=0
 FORCE=0
 YES=0
-INSTALLER_URL="${ANTIGRAVITY_LINUX_INSTALLER_URL:-}"
+
 
 log() { printf '%s\n' "$*"; }
 warn() { printf 'WARN: %s\n' "$*" >&2; }
@@ -53,9 +53,10 @@ Options:
   -y, --yes              Non-interactive; assume yes where possible
   -h, --help             Show this help
 
-Recommended GitHub Pages one-liner:
-  INSTALLER_URL="https://YOUR_GITHUB_USERNAME.github.io/antigravity-linux/install.sh"; \
-  curl -fsSL "$INSTALLER_URL" | sudo -E env ANTIGRAVITY_LINUX_INSTALLER_URL="$INSTALLER_URL" bash -s -- --all
+Recommended installation:
+  git clone https://github.com/ricanwarfare/antigravity-linux.git
+  cd antigravity-linux && bash scripts/check.sh
+  sudo bash install.sh --all
 
 Update after install:
   sudo antigravity-linux update --all
@@ -102,9 +103,14 @@ require_root_or_reexec() {
     return 0
   fi
   if command -v sudo >/dev/null 2>&1 && [ -n "${BASH_SOURCE[0]:-}" ] && [ -r "${BASH_SOURCE[0]}" ] && [ "${BASH_SOURCE[0]}" != "bash" ] && [ "${BASH_SOURCE[0]}" != "sh" ]; then
-    exec sudo -E env "ANTIGRAVITY_LINUX_INSTALLER_URL=$INSTALLER_URL" bash "${BASH_SOURCE[0]}" "${ORIGINAL_ARGS[@]}"
+    exec sudo bash "${BASH_SOURCE[0]}" "${ORIGINAL_ARGS[@]}"
   fi
-  err "System-wide install needs root. Use: curl -fsSL <installer-url> | sudo -E env ANTIGRAVITY_LINUX_INSTALLER_URL=<installer-url> bash"
+  err "System-wide install needs root. Download or clone the repository, review it, then run: sudo bash install.sh"
+}
+
+require_local_script() {
+  local source="${BASH_SOURCE[0]:-}"
+  [ -n "$source" ] && [ -f "$source" ] || err "Piped execution is intentionally unsupported. Download or clone the repository, review it, then run: sudo bash install.sh"
 }
 
 install_deps_debian() {
@@ -455,14 +461,54 @@ PY
   log "Installed Nautilus context-menu helper. Restart Files/Nautilus to see it."
 }
 
+install_update_units() {
+  local source_dir="$1"
+  local destination_dir="$2"
+  if [ -f "$source_dir/systemd/antigravity-linux-update.service" ] && [ -f "$source_dir/systemd/antigravity-linux-update.timer" ]; then
+    install -Dm0644 "$source_dir/systemd/antigravity-linux-update.service" "$destination_dir/antigravity-linux-update.service"
+    install -Dm0644 "$source_dir/systemd/antigravity-linux-update.timer" "$destination_dir/antigravity-linux-update.timer"
+    return
+  fi
+
+  # A reviewed standalone install.sh has no sibling systemd/ directory. Keep
+  # that supported by materializing the same units embedded below.
+  install -d -m0755 "$destination_dir"
+  cat > "$destination_dir/antigravity-linux-update.service" <<'UNIT'
+[Unit]
+Description=Update Google Antigravity from its official Linux tarball
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock -n /run/antigravity-linux-update.lock /usr/local/lib/antigravity-linux/install.sh update --desktop --no-apt --yes
+UNIT
+  cat > "$destination_dir/antigravity-linux-update.timer" <<'UNIT'
+[Unit]
+Description=Daily Antigravity update check
+
+[Timer]
+OnCalendar=*-*-* 04:17:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
+UNIT
+}
+
 install_manager_command() {
   local source="${BASH_SOURCE[0]:-}"
   [ -n "$source" ] && [ -f "$source" ] || err "Run a downloaded or checked-out install.sh; piped execution is intentionally unsupported."
   local source_dir
   source_dir=$(cd "$(dirname "$source")" && pwd)
-  install -Dm0755 "$source" /usr/local/lib/antigravity-linux/install.sh
-  install -Dm0644 "$source_dir/systemd/antigravity-linux-update.service" /usr/local/lib/antigravity-linux/systemd/antigravity-linux-update.service
-  install -Dm0644 "$source_dir/systemd/antigravity-linux-update.timer" /usr/local/lib/antigravity-linux/systemd/antigravity-linux-update.timer
+  # An update runs this already-installed copy. Reinstalling a file over itself
+  # makes GNU install fail, which previously caused no-op scheduled updates to
+  # exit unsuccessfully.
+  if [ "$(readlink -f "$source")" != "/usr/local/lib/antigravity-linux/install.sh" ]; then
+    install -Dm0755 "$source" /usr/local/lib/antigravity-linux/install.sh
+    install_update_units "$source_dir" /usr/local/lib/antigravity-linux/systemd
+  fi
 
   cat > /usr/local/bin/antigravity-linux <<'SH'
 #!/usr/bin/env bash
@@ -495,8 +541,7 @@ SH
 install_update_timer() {
   local source_dir
   source_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  install -Dm0644 "$source_dir/systemd/antigravity-linux-update.service" /etc/systemd/system/antigravity-linux-update.service
-  install -Dm0644 "$source_dir/systemd/antigravity-linux-update.timer" /etc/systemd/system/antigravity-linux-update.timer
+  install_update_units "$source_dir" /etc/systemd/system
   systemctl daemon-reload
   systemctl enable --now antigravity-linux-update.timer
 }
@@ -561,10 +606,7 @@ print_success_summary() {
   log "- Update log: journalctl -u antigravity-linux-update.service"
   log "- Timer:     systemctl status antigravity-linux-update.timer"
   log "- Uninstall: sudo antigravity-linux --uninstall"
-  if [ -z "$INSTALLER_URL" ]; then
-    log ""
-    log "Note: antigravity-linux was installed without a stored URL. Re-run this local script for updates or reinstall from a published URL."
-  fi
+
   if [ "$INSTALL_IDE" -eq 1 ]; then
     log ""
     log "Folder open integration: use your file manager's Open With menu, or Nautilus context menu after restarting Files."
@@ -595,10 +637,12 @@ main() {
     exit 0
   fi
   if [ "$DO_UNINSTALL" -eq 1 ]; then
+    require_local_script
     uninstall_all
     exit 0
   fi
 
+  require_local_script
   require_root_or_reexec
   install_deps_debian
   local tmp_parent="${TMPDIR:-/var/tmp}"

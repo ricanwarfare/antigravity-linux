@@ -144,20 +144,9 @@ The script can also run on other Linux distributions if the required tools alrea
 
 GNOME Files/Nautilus integration additionally needs `python3-nautilus`.
 
-## GitHub Pages setup
+## Published installer
 
-This repository includes a GitHub Actions workflow at `.github/workflows/pages.yml` that deploys the `docs/` directory to GitHub Pages.
-
-1. Use this repository, `opensnap/antigravity`, or fork it under your own account.
-2. Push your changes to the `main` branch.
-3. Open **Settings → Pages**.
-4. Set **Build and deployment → Source** to **GitHub Actions**.
-5. Run or wait for the **Deploy GitHub Pages** workflow.
-6. Your installer will be available at:
-
-```text
-https://opensnap.github.io/antigravity/install.sh
-```
+GitHub Pages may publish documentation and a standalone `install.sh`, but it is not an auto-executing trust source. Download the exact revision you intend to run, review it, then invoke it explicitly with `sudo bash install.sh`.
 
 ## Local development
 
@@ -190,11 +179,14 @@ sudo bash install.sh --all
 
 This installer uses `sudo` because it installs system-wide files under `/opt`, `/usr/local/bin`, `/usr/share/applications`, and `/usr/share/icons`.
 
-For safer review before running:
+For a reviewed installation:
 
 ```bash
-curl -fsSL "https://opensnap.github.io/antigravity/install.sh" -o install.sh
+git clone https://github.com/ricanwarfare/antigravity-linux.git
+cd antigravity-linux
+git rev-parse HEAD
 less install.sh
+bash scripts/check.sh
 sudo bash install.sh --all
 ```
 
