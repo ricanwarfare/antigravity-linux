@@ -18,168 +18,9 @@
 
 > **This is a community helper. Not affiliated with, endorsed by, or supported by Google.**
 
-One-command Linux installer/updater for **Google Antigravity 2.0** and **Antigravity IDE** using Google's official tarball downloads.
+A community installer and updater for **Google Antigravity 2.0** and **Antigravity IDE**, using Google's official Linux tarballs. This project does not mirror or redistribute Google binaries.
 
-This project does **not** mirror, modify, or redistribute Google Antigravity. The installer resolves the latest official Google tarball from [https://antigravity.google/download](https://antigravity.google/download) at install/update time, then adds Linux desktop integration around it.
-
-
-## Features
-
-- Installs the latest official Antigravity 2.0 Linux tarball.
-- Optionally installs Antigravity IDE.
-- Supports x86_64 and ARM64 Linux builds when Google provides them.
-- Installs app menu launchers.
-- Installs icons when available from the tarball.
-- Adds command-line launchers:
-  - `antigravity`
-  - `antigravity-ide`
-- Adds update helper:
-  - `sudo antigravity-linux update --all`
-- Adds folder opening integration for IDE:
-  - file manager `Open With` support through `.desktop` MIME entries
-  - optional GNOME Files/Nautilus right-click menu helper
-- Preserves the Electron/Chromium sandbox permission model instead of launching with `--no-sandbox` by default.
-
-## Minimum Requirements
-> `glibc >= 2.28, glibcxx >= 3.4.25 (e.g. Ubuntu 20. Debian 10, Fedora 36, RHEL 8)`
-
-## Install (reviewed local file)
-
-Do **not** pipe an installer into a root shell. Clone the fork, review the pinned checkout, then run it:
-
-```bash
-git clone https://github.com/ricanwarfare/antigravity-linux.git
-cd antigravity-linux
-bash scripts/check.sh
-sudo bash install.sh --desktop
-```
-
-The install copies the reviewed helper to `/usr/local/lib/antigravity-linux/`, so future updates use that local copy—not mutable code fetched from GitHub. A systemd timer checks daily at 04:17, with up to 15 minutes of jitter.
-
-## Update
-
-Once installed from a published URL:
-
-```bash
-sudo antigravity-linux update --all
-```
-
-Desktop app only:
-
-```bash
-sudo update-antigravity
-```
-
-IDE only:
-
-```bash
-sudo update-antigravity-ide
-```
-
-## Status and logs
-
-```bash
-antigravity-linux --status
-systemctl status antigravity-linux-update.timer
-journalctl -u antigravity-linux-update.service
-```
-
-## Uninstall
-
-When installed from a published URL:
-
-```bash
-sudo antigravity-linux --uninstall
-```
-
-For local-checkout installs without a stored installer URL, use the local script:
-
-```bash
-sudo bash install.sh --uninstall
-```
-
-The uninstall removes helper-managed files from `/opt`, `/usr/local/bin`, `/usr/share/applications`, `/usr/share/icons`, and the Nautilus extension path. It does not delete user settings in home directories.
-
-## Options
-
-```text
---desktop          Install/update Antigravity 2.0 desktop app only
---ide              Install/update Antigravity IDE only
---all              Install/update desktop app + IDE
---cli              Also run Google's official Antigravity CLI installer
---no-nautilus      Skip GNOME Files/Nautilus context-menu helper
---no-apt           Do not install apt dependencies automatically
---force            Reinstall even when the recorded version matches
---install-url URL  Store URL used by the antigravity-linux update command
---status           Show installed helper-managed apps and versions
---print-downloads  Print resolved official Google tarball URLs
---uninstall        Remove helper-managed installation
--y, --yes          Non-interactive; assume yes where possible
-```
-
-## What it installs
-
-| Component | Path |
-|---|---|
-| Antigravity 2.0 | `/opt/antigravity` |
-| Antigravity IDE | `/opt/antigravity-ide` |
-| CLI launchers | `/usr/local/bin/antigravity`, `/usr/local/bin/antigravity-ide` |
-| Update helper | `/usr/local/bin/antigravity-linux` |
-| App launchers | `/usr/share/applications/antigravity*.desktop` |
-| Icons | `/usr/share/icons/hicolor/512x512/apps/` |
-| Nautilus extension | `/usr/share/nautilus-python/extensions/open-in-antigravity-ide.py` |
-
-## Supported systems
-
-Designed for Debian/Ubuntu-based distributions with `apt-get`.
-
-The script can also run on other Linux distributions if the required tools already exist:
-
-- `bash`
-- `curl`
-- `tar`
-- `python3`
-- `desktop-file-utils`
-- `xdg-utils`
-
-GNOME Files/Nautilus integration additionally needs `python3-nautilus`.
-
-## Published installer
-
-GitHub Pages may publish documentation and a standalone `install.sh`, but it is not an auto-executing trust source. Download the exact revision you intend to run, review it, then invoke it explicitly with `sudo bash install.sh`.
-
-## Local development
-
-Clone the repository:
-
-```bash
-git clone https://github.com/opensnap/antigravity.git
-cd antigravity
-```
-
-Run local checks:
-
-```bash
-bash scripts/check.sh
-```
-
-Sync the GitHub Pages copy of the installer:
-
-```bash
-bash scripts/sync-site.sh
-```
-
-Install from the local checkout:
-
-```bash
-sudo bash install.sh --all
-```
-
-## Security notes
-
-This installer uses `sudo` because it installs system-wide files under `/opt`, `/usr/local/bin`, `/usr/share/applications`, and `/usr/share/icons`.
-
-For a reviewed installation:
+## Install from a reviewed checkout
 
 ```bash
 git clone https://github.com/ricanwarfare/antigravity-linux.git
@@ -187,20 +28,134 @@ cd antigravity-linux
 git rev-parse HEAD
 less install.sh
 bash scripts/check.sh
-sudo bash install.sh --all
+sudo bash install.sh --desktop
 ```
 
-## Contributing
+Record the commit you reviewed. Use `--ide` for only the IDE, or `--all` for both. To keep installation manual, add `--no-auto-update`. Piping the helper into a shell is unsupported.
 
-Contributions are welcome! Please open an issue or submit a pull request.
+The installer copies the reviewed helper to `/usr/local/lib/antigravity-linux/install.sh`. App updates use that local copy. The helper itself never automatically downloads a new version of its own code. To upgrade the helper, review a newer checkout and run its installer explicitly; existing app selection can be preserved with `sudo bash install.sh update`.
 
-> Read the [contributing guidelines](CONTRIBUTING.md) for more information.
+## Updates and automatic installation
 
-The easiest way to contribute is to check whether this works smoothly on your OS and if any issues arise, [open an issue](https://github.com/opensnap/antigravity/issues/new), describe the problem, your system details, and screenshots (if possible).
+```bash
+antigravity-linux check
+sudo antigravity-linux update
+sudo antigravity-linux --disable-auto-update
+sudo antigravity-linux --enable-auto-update
+```
 
-### Currently Confirmed OSes
+`check` (also `--check-updates`) reads available versions without changing apps, preferences, or update history. `update` defaults to the products saved from your installation. Explicit `--desktop`, `--ide`, or `--all` selects products for this run; it can install a selected missing product. Updating one app does not remove the other from the saved selection.
 
-- Ubuntu 24 (LTS)
+On a fresh systemd installation, automatic installation is enabled unless `--no-auto-update` is supplied. The timer runs daily at 04:17 local time with up to 15 minutes of jitter and catches up after downtime. It updates only saved products. **This timer installs updates; it is not a notification-only check.** Ordinary updates preserve disabled or masked timers. Explicitly enabling a masked timer requires unmasking it yourself.
+
+Preferences are saved under `/var/lib/antigravity-linux/`. `--no-nautilus` is also remembered. Existing installations migrate their managed products and timer preference. Systems without systemd use manual updates.
+
+The shortcuts `sudo update-antigravity` and `sudo update-antigravity-ide` remain available.
+
+## Rollback and recovery
+
+```bash
+sudo antigravity-linux rollback --desktop
+sudo antigravity-linux rollback --ide
+```
+
+One previous release is retained per product. Rollback restores that release and **disables automatic installation** so the next timer run cannot undo it. Re-enable it when you are ready. Without a product option, rollback selects all saved products and first checks that each has a previous release.
+
+Downloads and staged launchers are validated before activation. Failed activation restores the previous installation when available. An interrupted move is recovered on the next mutating command. These are structural checks, not a full GUI startup test; applications are never launched as root to test a release. Rollback swaps application files; desktop integration and user settings remain in place.
+
+Full release identifiers, including numeric build suffixes, are retained. Older releases and changes with ambiguous suffix ordering are blocked unless explicitly allowed with `--allow-downgrade`. `--force` reinstalls a matching version but does not bypass this protection. Old version records without build suffixes are refreshed once to record the full identifier.
+
+## Download verification
+
+All download requests and every redirect require HTTPS and approved publisher locations. Shared cloud storage is restricted to Google's Antigravity bucket, rather than accepting arbitrary buckets. Archives are checked for unsafe paths, escaping links, special files, duplicate members, and expected launcher layout before activation. Archive privilege bits are stripped; only the expected Chromium sandbox receives its required permission.
+
+Google's download page and the archive headers inspected on 2026-09-07 did not provide a publisher signature or trusted SHA-256 manifest for these tarballs. **HTTPS and a locally recorded hash do not constitute independent publisher-signature verification.** Automatic updates currently rely on HTTPS and the approved locations.
+
+If you have obtained a trusted SHA-256 through a separate trusted channel, supply it for the selected release:
+
+```bash
+sudo antigravity-linux update --desktop --desktop-sha256 TRUSTED_64_HEX_DIGIT_HASH
+sudo antigravity-linux update --ide --ide-sha256 TRUSTED_64_HEX_DIGIT_HASH
+```
+
+A mismatch stops installation. Hash arguments apply only to that invocation, not future releases. Status reports whether a supplied checksum matched, or whether only transport/location checks were available. The helper records the downloaded archive's SHA-256 for auditing; it does not claim that hashing an unverified download authenticates it. Use `--force` to re-download and check an already installed matching release.
+
+Official source: [Google download page](https://antigravity.google/download).
+
+## Status and logs
+
+```bash
+antigravity-linux --status
+systemctl status antigravity-linux-update.timer
+journalctl -u antigravity-linux-update.service
+bash install.sh --print-downloads --all
+```
+
+Status includes managed products, full release identifiers, automatic-installation preference, actual timer state, helper SHA-256 revision, last successful and failed operations, update results, archive verification, and retained previous releases. Checks do not need root. The helper requests elevation only for operations that change system files.
+
+All install, update, rollback, preference changes, and uninstall operations share one lock. A concurrent operation fails with a clear message instead of modifying the same files.
+
+## Options
+
+Run `bash install.sh --help` for the complete command reference.
+
+| Option | Purpose |
+|---|---|
+| `--desktop`, `--ide`, `--all` | Select products for this invocation |
+| `--check-updates` | Check available versions without installing |
+| `--no-auto-update`, `--auto-update` | Save automatic-installation preference during install/update |
+| `--disable-auto-update`, `--enable-auto-update` | Change that preference without installing app updates |
+| `--no-nautilus` | Skip optional IDE file-manager integration and save the preference |
+| `--no-apt` | Skip dependency installation; still check prerequisites |
+| `--force` | Reinstall an unchanged release |
+| `--allow-downgrade` | Explicitly permit an older or ambiguously ordered release |
+| `--desktop-sha256`, `--ide-sha256` | Check a downloaded archive against a supplied trusted hash |
+| `--cli` | Run Google's official CLI installer as the invoking non-root user |
+| `--status`, `--print-downloads` | Inspect installation or resolved URLs |
+| `--uninstall` | Remove helper-managed installation |
+
+The obsolete custom installer URL option was removed. Updates always use the installed local helper.
+
+`--cli` is an explicit exception to the local-helper workflow: it downloads and runs Google's current CLI installer as the user who invoked sudo. The CLI installer manages its own downloads and user files; the helper's archive verification, rollback, and uninstall apply to the desktop and IDE only. It will not run the CLI installer as root.
+
+## What it installs
+
+| Component | Path |
+|---|---|
+| Desktop / previous release | `/opt/antigravity`, `/opt/antigravity.previous` |
+| IDE / previous release | `/opt/antigravity-ide`, `/opt/antigravity-ide.previous` |
+| Reviewed helper | `/usr/local/lib/antigravity-linux/install.sh` |
+| Commands | `/usr/local/bin/antigravity`, `antigravity-ide`, `antigravity-linux` |
+| App launchers | `/usr/share/applications/antigravity*.desktop` |
+| Icons | `/usr/share/icons/hicolor/512x512/apps/` |
+| Optional Nautilus extension | `/usr/share/nautilus-python/extensions/open-in-antigravity-ide.py` |
+| Preferences / operation history | `/var/lib/antigravity-linux/` |
+| Timer / service | `/etc/systemd/system/antigravity-linux-update.*` |
+
+## Uninstall
+
+```bash
+sudo antigravity-linux --uninstall
+```
+
+The reviewed local script also accepts `sudo bash install.sh --uninstall`. This removes helper-managed app files, previous/staging releases, launchers, integration, preferences, history, and systemd units. User home settings and the separately managed CLI are left untouched.
+
+## Supported systems
+
+Designed for Debian/Ubuntu Linux on x86_64 and ARM64. On apt-based systems, dependencies are installed unless `--no-apt` is used. Other distributions must provide Bash, Python 3, tar, `flock` (util-linux), `sha256sum` (coreutils), and CA certificates. systemd is required only for scheduled updates. Desktop utilities and Nautilus Python bindings support optional desktop integration.
+
+Google lists glibc >= 2.28 and glibcxx >= 3.4.25 on its download page. Check Google's current requirements for the selected release. Ubuntu 24 was the project's previously confirmed OS; other systems need release testing.
+
+## Development and validation
+
+```bash
+bash scripts/sync-site.sh
+bash scripts/check.sh
+```
+
+Checks include shell syntax, documentation consistency, systemd unit validation, and offline behavioral tests. Tests redirect every managed system path into temporary directories and use small fixture archives; they never update the host installation or download Google binaries. Test on a fresh Debian/Ubuntu VM before releasing, including ARM64 when changing platform handling.
+
+Contributions and private vulnerability reports should target [this repository](https://github.com/ricanwarfare/antigravity-linux). See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## License
 

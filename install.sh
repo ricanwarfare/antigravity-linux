@@ -2,7 +2,7 @@
 # Antigravity Linux Installer
 # Installs/updates Google Antigravity 2.0 and, optionally, Antigravity IDE on Debian/Ubuntu.
 # It resolves the latest official Google tarballs from https://antigravity.google/download.
-set -euo pipefail
+set -Eeuo pipefail
 
 ORIGINAL_ARGS=("$@")
 PROJECT_NAME="antigravity-linux"
@@ -18,11 +18,29 @@ DO_STATUS=0
 DO_PRINT_DOWNLOADS=0
 FORCE=0
 YES=0
+ACTION=install
+PRODUCTS_EXPLICIT=0
+AUTO_REQUEST=""
+NAUTILUS_EXPLICIT=0
+SCHEDULED=0
+ALLOW_DOWNGRADE=0
+DESKTOP_SHA256=""
+IDE_SHA256=""
+STATE_DIR=/var/lib/antigravity-linux
+LOCK_FILE=/run/antigravity-linux-update.lock
+SAVED_DESKTOP=0
+SAVED_IDE=0
+AUTO_UPDATE=1
+SAVED_NAUTILUS=1
+WORK_DIR=""
+OPERATION=""
+FAILURE_MESSAGE=""
+TRACK_RESULT=0
 
 
 log() { printf '%s\n' "$*"; }
 warn() { printf 'WARN: %s\n' "$*" >&2; }
-err() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+err() { FAILURE_MESSAGE="$*"; printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || err "Required command not found: $1"; }
 
 usage() {
@@ -30,54 +48,66 @@ usage() {
 Antigravity Linux Installer
 
 Usage:
-  install.sh [install|update] [options]
-  install.sh --status
-  install.sh --print-downloads
-  install.sh --uninstall
+  install.sh [install|update|check|rollback] [options]
+  install.sh --status | --print-downloads | --uninstall
+  install.sh --enable-auto-update | --disable-auto-update
 
-Default:
-  Installs or updates Antigravity 2.0 desktop app system-wide.
+Install defaults to the desktop app. Update, check and rollback default to
+previously installed products. All commands use this reviewed local helper.
 
 Options:
-  --desktop              Install/update Antigravity 2.0 desktop app only (default)
-  --ide                  Install/update Antigravity IDE only
-  --all                  Install/update Antigravity 2.0 desktop app + Antigravity IDE
-  --cli                  Also run Google's official Antigravity CLI installer
-  --no-nautilus          Skip GNOME Files/Nautilus context-menu helper
-  --no-apt               Do not install apt dependencies automatically
-  --force                Reinstall even when the recorded version matches
-  --install-url URL      Store URL used by the antigravity-linux update command
-  --status               Show installed helper-managed apps and versions
-  --print-downloads      Print the resolved official Google tarball URLs
-  --uninstall            Remove helper-managed Antigravity desktop/IDE files
-  -y, --yes              Non-interactive; assume yes where possible
+  --desktop              Select desktop app
+  --ide                  Select standalone IDE
+  --all                  Select both apps
+  --check-updates         Check versions without installing (same as check)
+  --no-auto-update       Disable automatic installation; save this preference
+  --auto-update          Enable daily automatic installation
+  --enable-auto-update   Enable automatic installation without updating now
+  --disable-auto-update  Disable automatic installation without updating now
+  --no-nautilus          Skip Nautilus integration; save this preference
+  --no-apt               Skip dependency installation (still check prerequisites)
+  --force                Reinstall the same release; does not allow downgrades
+  --allow-downgrade      Explicitly permit an older release
+  --desktop-sha256 HASH  Verify desktop archive against a trusted SHA-256
+  --ide-sha256 HASH      Verify IDE archive against a trusted SHA-256
+  --cli                  Run Google's CLI installer as the invoking non-root user
+  --status               Show products, verification, timer and update history
+  --print-downloads      Print approved download URLs
+  --uninstall            Remove helper-managed files; keep user settings
+  -y, --yes              Non-interactive operation
   -h, --help             Show this help
 
-Recommended installation:
-  git clone https://github.com/ricanwarfare/antigravity-linux.git
-  cd antigravity-linux && bash scripts/check.sh
-  sudo bash install.sh --all
-
-Update after install:
-  sudo antigravity-linux update --all
+Examples:
+  sudo bash install.sh --ide --no-auto-update
+  antigravity-linux check
+  sudo antigravity-linux update
+  sudo antigravity-linux rollback --desktop
 USAGE
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    install|update) ;;
-    --desktop) INSTALL_DESKTOP=1; INSTALL_IDE=0 ;;
-    --ide) INSTALL_DESKTOP=0; INSTALL_IDE=1 ;;
-    --all) INSTALL_DESKTOP=1; INSTALL_IDE=1 ;;
+    install|update|check|rollback) ACTION="$1" ;;
+    --desktop) INSTALL_DESKTOP=1; INSTALL_IDE=0; PRODUCTS_EXPLICIT=1 ;;
+    --ide) INSTALL_DESKTOP=0; INSTALL_IDE=1; PRODUCTS_EXPLICIT=1 ;;
+    --all) INSTALL_DESKTOP=1; INSTALL_IDE=1; PRODUCTS_EXPLICIT=1 ;;
+    --check-updates) ACTION=check ;;
+    --auto-update) AUTO_REQUEST=1 ;;
+    --no-auto-update) AUTO_REQUEST=0 ;;
+    --enable-auto-update) ACTION=configure; AUTO_REQUEST=1 ;;
+    --disable-auto-update) ACTION=configure; AUTO_REQUEST=0 ;;
+    --scheduled) ACTION=update; SCHEDULED=1 ;;
     --cli) INSTALL_CLI=1 ;;
-    --no-nautilus) INSTALL_NAUTILUS=0 ;;
+    --no-nautilus) INSTALL_NAUTILUS=0; NAUTILUS_EXPLICIT=1 ;;
     --no-apt) INSTALL_DEPS=0 ;;
     --force) FORCE=1 ;;
-    --install-url)
-      shift
-      [ $# -gt 0 ] || err "--install-url needs a URL"
-      INSTALLER_URL="$1"
+    --allow-downgrade) ALLOW_DOWNGRADE=1 ;;
+    --desktop-sha256|--ide-sha256)
+      option="$1"; shift
+      [ $# -gt 0 ] && [[ "$1" =~ ^[0-9a-fA-F]{64}$ ]] || err "$option requires a SHA-256 hash"
+      if [ "$option" = --desktop-sha256 ]; then DESKTOP_SHA256="${1,,}"; else IDE_SHA256="${1,,}"; fi
       ;;
+    --install-url) err "--install-url was removed. Updates use the reviewed local helper." ;;
     --status) DO_STATUS=1 ;;
     --print-downloads) DO_PRINT_DOWNLOADS=1 ;;
     --uninstall) DO_UNINSTALL=1 ;;
@@ -114,30 +144,97 @@ require_local_script() {
 }
 
 install_deps_debian() {
-  [ "$INSTALL_DEPS" -eq 1 ] || return 0
-  if command -v apt-get >/dev/null 2>&1; then
+  if [ "$INSTALL_DEPS" -eq 1 ] && command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    local packages=(ca-certificates curl tar python3 desktop-file-utils xdg-utils)
+    local packages=(ca-certificates curl tar python3 util-linux desktop-file-utils xdg-utils)
     if [ "$INSTALL_NAUTILUS" -eq 1 ] && [ "$INSTALL_IDE" -eq 1 ]; then
       packages+=(python3-nautilus)
     fi
     apt-get install -y "${packages[@]}"
-  else
-    for c in curl tar python3; do need "$c"; done
   fi
+  for c in tar python3 flock sha256sum; do need "$c"; done
+}
+
+# Validate every hop BEFORE connecting. Shared cloud hosts are restricted to
+# the publisher's bucket/path, rather than trusting all tenants on that host.
+network_policy() {
+  cat <<'PY'
+import gzip, shutil, sys, time
+from urllib.parse import urlsplit, urljoin, unquote
+from urllib.request import Request, build_opener, HTTPRedirectHandler
+from urllib.error import HTTPError, URLError
+
+def approved(url):
+    p = urlsplit(url)
+    path = unquote(p.path)
+    if (p.scheme != 'https' or p.username or p.password or p.port not in (None, 443)
+            or p.fragment or any(c.isspace() or ord(c) < 32 for c in url)
+            or '\\' in path or '..' in path.split('/')):
+        raise ValueError('Unsafe download URL: ' + url)
+    host = p.hostname
+    allowed = (
+        (host in ('antigravity.google', 'www.antigravity.google') and
+         (path == '/download' or path.startswith('/_astro/') or path == '/cli/install.sh')) or
+        (host == 'storage.googleapis.com' and path.startswith('/antigravity-public/')) or
+        (host == 'edgedl.me.gvt1.com' and path.startswith('/edgedl/release2/') and '/antigravity/' in path) or
+        (host == 'dl.google.com' and path.startswith('/release2/') and '/antigravity/' in path)
+    )
+    if not allowed:
+        raise ValueError('Unapproved download location: ' + url)
+    return url
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+def fetch(url, destination):
+    opener = build_opener(NoRedirect())
+    for attempt in range(3):
+        current = url
+        try:
+            for hop in range(9):
+                approved(current)
+                request = Request(current, headers={'User-Agent': 'Mozilla/5.0', 'Accept-Encoding': 'identity'})
+                try:
+                    response = opener.open(request, timeout=60)
+                except HTTPError as e:
+                    if e.code in (301, 302, 303, 307, 308) and e.headers.get('Location'):
+                        current = urljoin(current, e.headers['Location'])
+                        e.close()
+                        continue
+                    raise
+                with response, open(destination, 'wb') as out:
+                    if response.status != 200:
+                        raise ValueError('Unexpected HTTP response: ' + str(response.status))
+                    stream = gzip.GzipFile(fileobj=response) if response.headers.get('Content-Encoding') == 'gzip' else response
+                    shutil.copyfileobj(stream, out)
+                return
+            raise ValueError('Too many redirects')
+        except (URLError, TimeoutError, OSError):
+            if attempt == 2:
+                raise
+            time.sleep(attempt + 1)
+PY
+}
+
+validate_url() {
+  { network_policy; printf '%s\n' 'approved(sys.argv[1])'; } | python3 - "$1"
+}
+
+fetch_official() {
+  { network_policy; printf '%s\n' 'fetch(sys.argv[1], sys.argv[2])'; } | python3 - "$1" "$2"
 }
 
 resolve_main_bundle() {
   local tmpdir="$1"
   local html="$tmpdir/download.html"
   local js="$tmpdir/download.js"
-  local user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
   # Google serves an incomplete document to curl's default user agent. A normal
   # desktop-browser user agent yields the official links directly, which is
   # simpler and less brittle than depending on Astro bundle names.
-  curl -fsSL --compressed --retry 3 -A "$user_agent" -o "$html" "$DOWNLOAD_PAGE"
+  fetch_official "$DOWNLOAD_PAGE" "$html" || return 1
   if python3 - "$html" "$AG_PLATFORM" <<'PY' >/dev/null
 import re, sys
 from pathlib import Path
@@ -166,15 +263,16 @@ if not matches:
     raise SystemExit('Could not find JavaScript bundle on the official Antigravity download page')
 print(urljoin(page, matches[-1]))
 PY
-)
-  curl -fsSL --compressed --retry 3 -A "$user_agent" -o "$js" "$main_js_url"
+) || return 1
+  fetch_official "$main_js_url" "$js" || return 1
   printf '%s\n' "$js"
 }
 
 resolve_download_from_bundle() {
   local js="$1"
   local product="$2"
-  python3 - "$js" "$AG_PLATFORM" "$product" <<'PY'
+  local resolved version url
+  resolved=$(python3 - "$js" "$AG_PLATFORM" "$product" <<'PY'
 import html, re, sys
 from pathlib import Path
 from urllib.parse import unquote
@@ -194,8 +292,10 @@ def version_from_url(url):
     for pattern in (r'/antigravity-hub/([^/]+)/', r'/stable/([^/]+)/', r'/(\d+\.\d+\.\d+(?:-[^/]+)?)/'):
         m = re.search(pattern, decoded)
         if m:
-            return m.group(1).split('-', 1)[0]
-    return 'unknown'
+            version = m.group(1)
+            if re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?', version):
+                return version
+    fail('Unrecognized release version in URL: ' + url)
 
 if product == 'desktop':
     marker = 'id:"antigravity-2"'
@@ -228,6 +328,10 @@ for section in sections:
 
 fail(f'Could not find official {label} tarball for {platform} in Google download bundle')
 PY
+) || return 1
+  read -r version url <<< "$resolved"
+  validate_url "$url" || return 1
+  printf '%s %s\n' "$version" "$url"
 }
 
 resolve_desktop_download() { resolve_download_from_bundle "$1" desktop; }
@@ -256,21 +360,166 @@ with asar.open('rb') as f:
 PY
 }
 
-safe_replace_dir() {
-  local newdir="$1"
-  local target="$2"
-  # Retain exactly one known-good rollback directory. The new directory is
-  # fully staged before the active installation is moved out of the way.
-  rm -rf "${target}.previous"
-  if [ -d "$target" ]; then
-    mv "$target" "${target}.previous"
+validate_installation() {
+  local root="$1" launcher="$2"
+  [ -d "$root" ] && [ ! -L "$root" ] && [ -f "$root/$launcher" ] &&
+    [ ! -L "$root/$launcher" ] && [ -x "$root/$launcher" ] &&
+    [ -s "$root/.antigravity-linux-version" ]
+}
+
+recover_installation() {
+  local root="$1" launcher="$2"
+  if [ ! -e "$root" ] && validate_installation "${root}.previous" "$launcher"; then
+    mv "${root}.previous" "$root" || return 1
+    warn "Recovered interrupted replacement at $root"
   fi
-  mv "$newdir" "$target"
+}
+
+safe_replace_dir() {
+  local newdir="$1" target="$2" launcher="$3"
+  validate_installation "$newdir" "$launcher" || { warn "Invalid staged installation"; return 1; }
+  if [ -e "$target" ]; then
+    validate_installation "$target" "$launcher" || { warn "Existing installation is invalid; refusing to discard recovery files"; return 1; }
+    rm -rf "${target}.previous" || return 1
+    mv "$target" "${target}.previous" || return 1
+  fi
+  if mv "$newdir" "$target" && validate_installation "$target" "$launcher"; then
+    return 0
+  fi
+  if [ -e "$target" ]; then mv "$target" "$newdir" || return 1; fi
+  recover_installation "$target" "$launcher" || return 1
+  warn "Replacement failed; the previous installation was restored when available"
+  return 1
+}
+
+verify_archive() {
+  local archive="$1" expected="$2"
+  ARCHIVE_HASH=$(sha256sum "$archive")
+  ARCHIVE_HASH="${ARCHIVE_HASH%% *}"
+  ARCHIVE_VERIFICATION="HTTPS and approved location; no publisher checksum supplied"
+  if [ -n "$expected" ]; then
+    [ "$ARCHIVE_HASH" = "$expected" ] || err "Archive SHA-256 mismatch"
+    ARCHIVE_VERIFICATION="Matched supplied trusted SHA-256"
+  fi
+}
+
+# Reject escaping links, special files, duplicate paths and privilege bits before
+# root extraction. Do not depend on tar's partial path traversal protections.
+extract_archive() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import os, posixpath, sys, tarfile
+from pathlib import PurePosixPath
+archive, destination, top = sys.argv[1:]
+with tarfile.open(archive, 'r:gz') as tf:
+    members = tf.getmembers()
+    seen = set()
+    symlinks = {}
+    for m in members:
+        path = PurePosixPath(m.name)
+        if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0] != top:
+            raise SystemExit('Unsafe archive path: ' + m.name)
+        normalized = str(path)
+        if normalized in seen:
+            raise SystemExit('Duplicate archive path: ' + m.name)
+        seen.add(normalized)
+        if not (m.isfile() or m.isdir() or m.issym() or m.islnk()):
+            raise SystemExit('Unsupported archive member: ' + m.name)
+        if m.issym() or m.islnk():
+            link = m.linkname
+            resolved = posixpath.normpath(posixpath.join(str(path.parent), link) if m.issym() else link)
+            if link.startswith('/') or not (resolved == top or resolved.startswith(top + '/')):
+                raise SystemExit('Escaping archive link: ' + m.name)
+            if m.issym():
+                symlinks[normalized] = m.linkname
+        m.uid = m.gid = 0
+        m.uname = m.gname = ''
+        m.mode &= 0o755
+    # Resolve link chains in archive space before extraction, including on
+    # Python versions without tarfile's data filter.
+    def resolve_link(path):
+        pending = path.split('/')
+        resolved = []
+        hops = 0
+        while pending:
+            part = pending.pop(0)
+            if part in ('', '.'):
+                continue
+            if part == '..':
+                if len(resolved) <= 1:
+                    raise SystemExit('Escaping archive link chain: ' + path)
+                resolved.pop()
+                continue
+            candidate = '/'.join(resolved + [part])
+            if candidate in symlinks:
+                hops += 1
+                if hops > 40:
+                    raise SystemExit('Cyclic archive link: ' + path)
+                pending = symlinks[candidate].split('/') + pending
+            else:
+                resolved.append(part)
+        if not resolved or resolved[0] != top:
+            raise SystemExit('Escaping archive link chain: ' + path)
+
+    regular_files = {str(PurePosixPath(m.name)) for m in members if m.isfile()}
+    for name in symlinks:
+        resolve_link(name)
+    for m in members:
+        path = PurePosixPath(m.name)
+        if any(str(parent) in symlinks for parent in path.parents):
+            raise SystemExit('Archive member nested below symlink: ' + m.name)
+        if m.islnk() and str(PurePosixPath(m.linkname)) not in regular_files:
+            raise SystemExit('Hard link must target a regular archive member: ' + m.name)
+    # Explicit validation above supports Python versions predating tar filters.
+    kwargs = {'filter': 'data'} if hasattr(tarfile, 'data_filter') else {}
+    tf.extractall(destination, members=members, **kwargs)
+PY
+}
+
+version_relation() {
+  python3 - "$1" "$2" <<'PY'
+import re, sys
+
+def parse(v):
+    m = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z][0-9A-Za-z.-]*))?', v)
+    if not m:
+        raise SystemExit('Unrecognized recorded version: ' + v)
+    return tuple(map(int, m.group(1, 2, 3))), m.group(4)
+old, new = sys.argv[1:]
+a, x = parse(old); b, y = parse(new)
+if old == new:
+    print('same')
+elif a != b:
+    print('upgrade' if b > a else 'downgrade')
+elif x is None:
+    # Migration from the old helper, which discarded build identifiers.
+    print('upgrade')
+elif x.isdigit() and y is not None and y.isdigit():
+    print('upgrade' if int(y) > int(x) else 'downgrade')
+else:
+    # Unknown suffix ordering must not silently replace a newer release.
+    print('ambiguous')
+PY
+}
+
+should_install() {
+  local root="$1" launcher="$2" version="$3" current relation
+  current=$(installed_version "$root/.antigravity-linux-version")
+  if [ -n "$current" ]; then
+    relation=$(version_relation "$current" "$version") || err "Cannot compare installed release"
+    if [ "$relation" = downgrade ] || [ "$relation" = ambiguous ]; then
+      [ "$ALLOW_DOWNGRADE" -eq 1 ] || err "Refusing $relation release change $current -> $version; use --allow-downgrade explicitly"
+    fi
+    if [ "$relation" = same ] && [ "$FORCE" -eq 0 ] && validate_installation "$root" "$launcher"; then
+      log "$root $version is already installed."
+      return 1
+    fi
+  fi
+  return 0
 }
 
 fix_chrome_sandbox() {
   local sandbox="$1"
-  if [ -f "$sandbox" ]; then
+  if [ -f "$sandbox" ] && [ ! -L "$sandbox" ]; then
     chown root:root "$sandbox"
     chmod 4755 "$sandbox"
   fi
@@ -294,23 +543,18 @@ install_desktop_app() {
   local tmpdir="$1"
   local js="$2"
   local version url
-  read -r version url < <(resolve_desktop_download "$js")
+  local resolved
+  resolved=$(resolve_desktop_download "$js") || err "Could not resolve desktop download"
+  read -r version url <<< "$resolved"
   local root="/opt/antigravity"
-  local target="$root/$DESKTOP_TOP/antigravity"
-  local version_file="$root/.antigravity-linux-version"
-  if [ "$FORCE" -eq 0 ] && [ -x "$target" ] && [ "$(installed_version "$version_file")" = "$version" ]; then
-    log "Antigravity 2.0 $version is already installed."
-    return
-  fi
+  if ! should_install "$root" "$DESKTOP_TOP/antigravity" "$version"; then return; fi
 
   log "Downloading Antigravity 2.0 $version for $AG_PLATFORM from Google..."
   local archive="$tmpdir/Antigravity.tar.gz"
-  curl -fsSL --retry 3 -o "$archive" "$url"
-  tar -tzf "$archive" > "$tmpdir/desktop-list.txt"
-  local top_dir
-  top_dir=$(sed -n '1{s#/.*##;p;q}' "$tmpdir/desktop-list.txt")
-  [ "$top_dir" = "$DESKTOP_TOP" ] || err "Unexpected Antigravity archive layout: $top_dir"
-  tar -xzf "$archive" -C "$tmpdir"
+  fetch_official "$url" "$archive"
+  verify_archive "$archive" "$DESKTOP_SHA256"
+  local top_dir="$DESKTOP_TOP"
+  extract_archive "$archive" "$tmpdir" "$top_dir"
   [ -x "$tmpdir/$top_dir/antigravity" ] || err "Antigravity launcher not found inside tarball."
 
   local icon_staged="$tmpdir/antigravity.png"
@@ -324,8 +568,11 @@ install_desktop_app() {
   printf '%s\n' "$version" > "${root}.new/.antigravity-linux-version"
   printf '%s\n' "$url" > "${root}.new/.antigravity-linux-source-url"
   fix_chrome_sandbox "${root}.new/$top_dir/chrome-sandbox"
-  safe_replace_dir "${root}.new" "$root"
+  printf '%s\n' "$ARCHIVE_HASH" > "${root}.new/.antigravity-linux-sha256"
+  printf '%s\n' "$ARCHIVE_VERIFICATION" > "${root}.new/.antigravity-linux-verification"
+  safe_replace_dir "${root}.new" "$root" "$DESKTOP_TOP/antigravity" || err "Could not activate desktop release"
 
+  install -d -m0755 /usr/local/bin
   ln -sfn "$root/$top_dir/antigravity" /usr/local/bin/antigravity
   mkdir -p /usr/share/icons/hicolor/512x512/apps /usr/share/applications
   if [ -f "$icon_staged" ]; then
@@ -351,23 +598,19 @@ install_ide_app() {
   local tmpdir="$1"
   local js="$2"
   local version url
-  read -r version url < <(resolve_ide_download "$js")
+  local resolved
+  resolved=$(resolve_ide_download "$js") || err "Could not resolve ide download"
+  read -r version url <<< "$resolved"
   local root="/opt/antigravity-ide"
   local install_dir="Antigravity-IDE"
-  local version_file="$root/.antigravity-linux-version"
-  if [ "$FORCE" -eq 0 ] && [ -x "$root/$install_dir/antigravity-ide" ] && [ "$(installed_version "$version_file")" = "$version" ]; then
-    log "Antigravity IDE $version is already installed."
-    return
-  fi
+  if ! should_install "$root" "$install_dir/antigravity-ide" "$version"; then return; fi
 
   log "Downloading Antigravity IDE $version for $AG_PLATFORM from Google..."
   local archive="$tmpdir/Antigravity-IDE.tar.gz"
-  curl -fsSL --retry 3 -o "$archive" "$url"
-  tar -tzf "$archive" > "$tmpdir/ide-list.txt"
-  local top_dir
-  top_dir=$(sed -n '1{s#/.*##;p;q}' "$tmpdir/ide-list.txt")
-  [ "$top_dir" = "Antigravity IDE" ] || err "Unexpected Antigravity IDE archive layout: $top_dir"
-  tar -xzf "$archive" -C "$tmpdir"
+  fetch_official "$url" "$archive"
+  verify_archive "$archive" "$IDE_SHA256"
+  local top_dir="Antigravity IDE"
+  extract_archive "$archive" "$tmpdir" "$top_dir"
   [ -x "$tmpdir/$top_dir/antigravity-ide" ] || err "Antigravity IDE launcher not found inside tarball."
 
   rm -rf "${root}.new"
@@ -376,8 +619,11 @@ install_ide_app() {
   printf '%s\n' "$version" > "${root}.new/.antigravity-linux-version"
   printf '%s\n' "$url" > "${root}.new/.antigravity-linux-source-url"
   fix_chrome_sandbox "${root}.new/$install_dir/chrome-sandbox"
-  safe_replace_dir "${root}.new" "$root"
+  printf '%s\n' "$ARCHIVE_HASH" > "${root}.new/.antigravity-linux-sha256"
+  printf '%s\n' "$ARCHIVE_VERIFICATION" > "${root}.new/.antigravity-linux-verification"
+  safe_replace_dir "${root}.new" "$root" "$install_dir/antigravity-ide" || err "Could not activate ide release"
 
+  install -d -m0755 /usr/local/bin
   ln -sfn "$root/$install_dir/antigravity-ide" /usr/local/bin/antigravity-ide
   mkdir -p /usr/share/icons/hicolor/512x512/apps /usr/share/applications
   local icon_source="$root/$install_dir/resources/app/resources/linux/code.png"
@@ -481,7 +727,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/flock -n /run/antigravity-linux-update.lock /usr/local/lib/antigravity-linux/install.sh update --desktop --no-apt --yes
+ExecStart=/usr/local/lib/antigravity-linux/install.sh update --scheduled --no-apt --yes
 UNIT
   cat > "$destination_dir/antigravity-linux-update.timer" <<'UNIT'
 [Unit]
@@ -510,40 +756,154 @@ install_manager_command() {
     install_update_units "$source_dir" /usr/local/lib/antigravity-linux/systemd
   fi
 
+  install -d -m0755 /usr/local/bin
   cat > /usr/local/bin/antigravity-linux <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 helper=/usr/local/lib/antigravity-linux/install.sh
-case "${1:-}" in
-  --status|--print-downloads|-h|--help)
-    exec "$helper" "$@"
-    ;;
-esac
-if [ "$(id -u)" -eq 0 ]; then
-  exec "$helper" "$@"
-else
-  exec sudo "$helper" "$@"
-fi
+exec "$helper" "$@"
 SH
-  chmod +x /usr/local/bin/antigravity-linux
+  chmod 0755 /usr/local/bin/antigravity-linux
   cat > /usr/local/bin/update-antigravity <<'SH'
 #!/usr/bin/env bash
 exec antigravity-linux update --desktop "$@"
 SH
-  chmod +x /usr/local/bin/update-antigravity
+  chmod 0755 /usr/local/bin/update-antigravity
   cat > /usr/local/bin/update-antigravity-ide <<'SH'
 #!/usr/bin/env bash
 exec antigravity-linux update --ide "$@"
 SH
-  chmod +x /usr/local/bin/update-antigravity-ide
+  chmod 0755 /usr/local/bin/update-antigravity-ide
+}
+
+systemd_available() {
+  command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
 }
 
 install_update_timer() {
+  local unit
+  for unit in antigravity-linux-update.service antigravity-linux-update.timer; do
+    if [ "$(readlink "/etc/systemd/system/$unit" 2>/dev/null || true)" = /dev/null ]; then
+      [ "$AUTO_REQUEST" != 1 ] || err "$unit is masked. Unmask it before explicitly enabling automatic updates."
+      warn "Preserving masked unit $unit"
+      return
+    fi
+  done
   local source_dir
   source_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   install_update_units "$source_dir" /etc/systemd/system
+  if ! systemd_available; then
+    warn "systemd is unavailable; use manual updates on this system"
+    return
+  fi
   systemctl daemon-reload
-  systemctl enable --now antigravity-linux-update.timer
+  # Never re-enable a timer simply because an ordinary update ran.
+  if [ "$AUTO_REQUEST" = 1 ] || { [ "$ACTION" = install ] && [ "$HAD_STATE" -eq 0 ] && [ "$AUTO_UPDATE" -eq 1 ]; }; then
+    systemctl enable --now antigravity-linux-update.timer
+  elif [ "$AUTO_UPDATE" -eq 0 ]; then
+    systemctl disable --now antigravity-linux-update.timer
+  fi
+}
+
+load_state() {
+  HAD_STATE=0
+  if [ -f "$STATE_DIR/preferences" ]; then
+    HAD_STATE=1
+    local key value
+    while IFS='=' read -r key value; do
+      [[ "$value" =~ ^[01]$ ]] || err "Invalid saved preference: $key"
+      case "$key" in
+        desktop) SAVED_DESKTOP="$value" ;;
+        ide) SAVED_IDE="$value" ;;
+        auto_update) AUTO_UPDATE="$value" ;;
+        nautilus) SAVED_NAUTILUS="$value" ;;
+        *) err "Unknown saved preference: $key" ;;
+      esac
+    done < "$STATE_DIR/preferences"
+  else
+    # Migrate existing helper installations without selecting uninstalled apps.
+    [ ! -f /opt/antigravity/.antigravity-linux-version ] || SAVED_DESKTOP=1
+    [ ! -f /opt/antigravity-ide/.antigravity-linux-version ] || SAVED_IDE=1
+    if [ -f /etc/systemd/system/antigravity-linux-update.timer ]; then
+      HAD_STATE=1
+      if systemd_available && ! systemctl is-enabled --quiet antigravity-linux-update.timer; then AUTO_UPDATE=0; fi
+    fi
+  fi
+  if [ "$NAUTILUS_EXPLICIT" -eq 0 ]; then INSTALL_NAUTILUS="$SAVED_NAUTILUS"; fi
+  if [ "$PRODUCTS_EXPLICIT" -eq 0 ] && { [ "$ACTION" != install ] || [ "$DO_PRINT_DOWNLOADS" -eq 1 ]; }; then
+    INSTALL_DESKTOP="$SAVED_DESKTOP"; INSTALL_IDE="$SAVED_IDE"
+  fi
+  if [ -n "$AUTO_REQUEST" ]; then AUTO_UPDATE="$AUTO_REQUEST"; fi
+}
+
+save_state() {
+  install -d -m0755 "$STATE_DIR"
+  # Record every managed installed product; selecting one for a manual update
+  # does not silently remove the other from scheduled updates.
+  SAVED_DESKTOP=0; SAVED_IDE=0
+  [ ! -f /opt/antigravity/.antigravity-linux-version ] || SAVED_DESKTOP=1
+  [ ! -f /opt/antigravity-ide/.antigravity-linux-version ] || SAVED_IDE=1
+  printf 'desktop=%s\nide=%s\nauto_update=%s\nnautilus=%s\n' \
+    "$SAVED_DESKTOP" "$SAVED_IDE" "$AUTO_UPDATE" "$INSTALL_NAUTILUS" > "$STATE_DIR/preferences.new"
+  chmod 0644 "$STATE_DIR/preferences.new"
+  mv "$STATE_DIR/preferences.new" "$STATE_DIR/preferences"
+}
+
+acquire_lock() {
+  need flock
+  exec 9>"$LOCK_FILE"
+  flock -n 9 || err "Another install, update, rollback or uninstall is running. Try again after it finishes."
+}
+
+finish_operation() {
+  local code="$?"
+  trap - EXIT
+  if [ "$code" -ne 0 ] && [ "$TRACK_RESULT" -eq 1 ]; then
+    recover_installation /opt/antigravity "$DESKTOP_TOP/antigravity" || true
+    recover_installation /opt/antigravity-ide Antigravity-IDE/antigravity-ide || true
+  fi
+  if [ -n "$WORK_DIR" ]; then rm -rf -- "$WORK_DIR"; fi
+  if [ "$TRACK_RESULT" -eq 1 ]; then
+    local result=last-success
+    [ "$code" -eq 0 ] || result=last-failure
+    printf '%s | %s | exit=%s | %s\n' "$(date -u +%FT%TZ)" "$OPERATION" "$code" "$FAILURE_MESSAGE" > "$STATE_DIR/$result.new"
+    mv "$STATE_DIR/$result.new" "$STATE_DIR/$result"
+    if [ "$OPERATION" = update ]; then
+      cp "$STATE_DIR/$result" "$STATE_DIR/update-$result.new"
+      mv "$STATE_DIR/update-$result.new" "$STATE_DIR/update-$result"
+    fi
+  fi
+  exit "$code"
+}
+
+rollback_product() {
+  local root="$1" launcher="$2"
+  validate_installation "${root}.previous" "$launcher" || err "No valid previous release for $root"
+  # This temporary rename leaves the current installation usable on interruption.
+  rm -rf "${root}.new"
+  mv "${root}.previous" "${root}.new"
+  safe_replace_dir "${root}.new" "$root" "$launcher" || err "Rollback failed for $root"
+  log "Restored $root $(installed_version "$root/.antigravity-linux-version")"
+}
+
+check_updates() {
+  local js="$1" product root resolved version url current relation
+  for product in desktop ide; do
+    [ "$product" != desktop ] || [ "$INSTALL_DESKTOP" -eq 1 ] || continue
+    [ "$product" != ide ] || [ "$INSTALL_IDE" -eq 1 ] || continue
+    root=/opt/antigravity
+    [ "$product" != ide ] || root=/opt/antigravity-ide
+    resolved=$(resolve_download_from_bundle "$js" "$product") || err "Could not resolve $product download"
+    read -r version url <<< "$resolved"
+    if [ "$DO_PRINT_DOWNLOADS" -eq 1 ]; then
+      log "$product $version: $url"
+      continue
+    fi
+    current=$(installed_version "$root/.antigravity-linux-version")
+    relation='not installed'
+    if [ -n "$current" ]; then relation=$(version_relation "$current" "$version") || err "Cannot compare $product releases"; fi
+    log "$product: installed=${current:-none}; available=$version; $relation"
+  done
 }
 
 print_status() {
@@ -565,28 +925,28 @@ print_status() {
   else
     log "- Update helper: not installed"
   fi
+  log "- Managed products: desktop=$SAVED_DESKTOP ide=$SAVED_IDE"
+  log "- Automatic installation preference: $AUTO_UPDATE (1=enabled, 0=disabled)"
+  local timer_state=unavailable
+  if systemd_available; then timer_state=$(systemctl is-enabled antigravity-linux-update.timer 2>/dev/null || true); fi
+  log "- Timer: $timer_state"
+  local helper=/usr/local/lib/antigravity-linux/install.sh digest
+  if [ -f "$helper" ]; then
+    digest=$(sha256sum "$helper"); log "- Helper revision (SHA-256): ${digest%% *}"
+  fi
+  local item root
+  for item in last-success last-failure update-last-success update-last-failure; do
+    log "- $item: $(installed_version "$STATE_DIR/$item")"
+  done
+  for root in /opt/antigravity /opt/antigravity-ide; do
+    if [ -f "$root/.antigravity-linux-version" ]; then
+      log "- $root verification: $(installed_version "$root/.antigravity-linux-verification")"
+      log "  Archive SHA-256: $(installed_version "$root/.antigravity-linux-sha256")"
+      log "  Previous release: $(installed_version "${root}.previous/.antigravity-linux-version")"
+    fi
+  done
 }
 
-print_downloads() {
-  need curl
-  need python3
-  local tmp_parent="${TMPDIR:-/tmp}"
-  local tmpdir
-  tmpdir=$(mktemp -d "$tmp_parent/$PROJECT_NAME.XXXXXX")
-  local js
-  js=$(resolve_main_bundle "$tmpdir")
-  if [ "$INSTALL_DESKTOP" -eq 1 ]; then
-    local version url
-    read -r version url < <(resolve_desktop_download "$js")
-    log "Antigravity 2.0 $version: $url"
-  fi
-  if [ "$INSTALL_IDE" -eq 1 ]; then
-    local version url
-    read -r version url < <(resolve_ide_download "$js")
-    log "Antigravity IDE $version: $url"
-  fi
-  rm -rf "$tmpdir"
-}
 
 print_success_summary() {
   log ""
@@ -602,7 +962,7 @@ print_success_summary() {
   log ""
   log "Manage:"
   log "- Status:    antigravity-linux --status"
-  log "- Update:    sudo antigravity-linux update --all"
+  log "- Update:    sudo antigravity-linux update"
   log "- Update log: journalctl -u antigravity-linux-update.service"
   log "- Timer:     systemctl status antigravity-linux-update.timer"
   log "- Uninstall: sudo antigravity-linux --uninstall"
@@ -617,55 +977,91 @@ uninstall_all() {
   require_root_or_reexec
   systemctl disable --now antigravity-linux-update.timer 2>/dev/null || true
   rm -f /etc/systemd/system/antigravity-linux-update.service /etc/systemd/system/antigravity-linux-update.timer
-  systemctl daemon-reload
+  if systemd_available; then systemctl daemon-reload; fi
   rm -rf /opt/antigravity /opt/antigravity.new /opt/antigravity.previous /opt/antigravity-ide /opt/antigravity-ide.new /opt/antigravity-ide.previous /usr/local/lib/antigravity-linux
   rm -f /usr/local/bin/antigravity /usr/local/bin/antigravity-ide /usr/local/bin/update-antigravity /usr/local/bin/update-antigravity-ide /usr/local/bin/antigravity-linux
   rm -f /usr/share/applications/antigravity.desktop /usr/share/applications/antigravity-ide.desktop
   rm -f /usr/share/icons/hicolor/512x512/apps/antigravity.png /usr/share/icons/hicolor/512x512/apps/antigravity-ide.png
   rm -f /usr/share/nautilus-python/extensions/open-in-antigravity-ide.py
+  rm -rf "$STATE_DIR"
   refresh_desktop_caches
   log "Removed helper-managed Antigravity files. User settings under home directories were left untouched."
 }
 
 main() {
-  if [ "$DO_STATUS" -eq 1 ]; then
-    print_status
-    exit 0
-  fi
-  if [ "$DO_PRINT_DOWNLOADS" -eq 1 ]; then
-    print_downloads
-    exit 0
-  fi
-  if [ "$DO_UNINSTALL" -eq 1 ]; then
-    require_local_script
-    uninstall_all
-    exit 0
+  load_state
+  if [ "$DO_STATUS" -eq 1 ]; then print_status; return; fi
+  if [ "$ACTION" = check ] || [ "$DO_PRINT_DOWNLOADS" -eq 1 ]; then
+    [ "$INSTALL_DESKTOP$INSTALL_IDE" != 00 ] || err "No managed products. Select --desktop, --ide or --all to check."
+    need python3
+    WORK_DIR=$(mktemp -d)
+    trap finish_operation EXIT
+    local js
+    js=$(resolve_main_bundle "$WORK_DIR") || err "Could not read official downloads"
+    check_updates "$js"
+    return
   fi
 
   require_local_script
   require_root_or_reexec
+  umask 022
+  acquire_lock
+  # Re-read state under the lock before any changes.
+  load_state
+  if [ "$DO_UNINSTALL" -eq 1 ]; then uninstall_all; return; fi
+  if [ "$SCHEDULED" -eq 1 ] && [ "$AUTO_UPDATE" -eq 0 ]; then
+    log "Automatic installation is disabled."
+    return
+  fi
+  OPERATION="$ACTION"
+  install -d -m0755 "$STATE_DIR"
+  TRACK_RESULT=1
+  trap finish_operation EXIT
+  trap 'FAILURE_MESSAGE="Interrupted"; exit 130' INT
+  trap 'FAILURE_MESSAGE="Terminated"; exit 143' TERM
+  trap 'FAILURE_MESSAGE="Failed at line $LINENO"' ERR
+  recover_installation /opt/antigravity "$DESKTOP_TOP/antigravity"
+  recover_installation /opt/antigravity-ide Antigravity-IDE/antigravity-ide
+
+  if [ "$ACTION" = configure ]; then
+    [ -f /usr/local/lib/antigravity-linux/install.sh ] || err "Install the helper before configuring automatic updates"
+    save_state
+    install_update_timer
+    log "Automatic installation preference saved: $AUTO_UPDATE"
+    return
+  fi
+  [ "$INSTALL_DESKTOP$INSTALL_IDE" != 00 ] || err "No managed products. Run install with --desktop or --ide first."
+  if [ "$ACTION" = rollback ]; then
+    # Validate all requested rollback targets before changing either product.
+    if [ "$INSTALL_DESKTOP" -eq 1 ]; then validate_installation /opt/antigravity.previous "$DESKTOP_TOP/antigravity" || err "No previous desktop release"; fi
+    if [ "$INSTALL_IDE" -eq 1 ]; then validate_installation /opt/antigravity-ide.previous Antigravity-IDE/antigravity-ide || err "No previous IDE release"; fi
+    # Disable updates first so a later failure cannot immediately undo rollback.
+    AUTO_UPDATE=0; AUTO_REQUEST=0
+    save_state
+    install_update_timer
+    if [ "$INSTALL_DESKTOP" -eq 1 ]; then rollback_product /opt/antigravity "$DESKTOP_TOP/antigravity"; fi
+    if [ "$INSTALL_IDE" -eq 1 ]; then rollback_product /opt/antigravity-ide Antigravity-IDE/antigravity-ide; fi
+    log "Automatic installation is disabled to preserve the restored release."
+    return
+  fi
+
   install_deps_debian
-  local tmp_parent="${TMPDIR:-/var/tmp}"
-  mkdir -p "$tmp_parent"
-  local tmpdir
-  tmpdir=$(mktemp -d "$tmp_parent/$PROJECT_NAME.XXXXXX")
-  trap "rm -rf -- $(printf '%q' "$tmpdir")" EXIT
+  WORK_DIR=$(mktemp -d /var/tmp/antigravity-linux.XXXXXX)
   local js
-  js=$(resolve_main_bundle "$tmpdir")
-  [ "$INSTALL_DESKTOP" -eq 1 ] && install_desktop_app "$tmpdir" "$js"
-  [ "$INSTALL_IDE" -eq 1 ] && install_ide_app "$tmpdir" "$js"
+  js=$(resolve_main_bundle "$WORK_DIR") || err "Could not read official downloads"
+  if [ "$INSTALL_DESKTOP" -eq 1 ]; then install_desktop_app "$WORK_DIR" "$js"; fi
+  if [ "$INSTALL_IDE" -eq 1 ]; then install_ide_app "$WORK_DIR" "$js"; fi
   install_nautilus_extension
   if [ "$INSTALL_CLI" -eq 1 ]; then
-    log "Running Google's official Antigravity CLI installer for the non-root user..."
-    if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER:-}" != "root" ]; then
-      sudo -u "$SUDO_USER" -H bash -lc "curl -fsSL '$CLI_INSTALLER' | bash"
-    else
-      curl -fsSL "$CLI_INSTALLER" | bash
-    fi
+    [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || err "--cli requires a non-root invoking user via sudo"
+    log "Running Google's official CLI installer as $SUDO_USER..."
+    fetch_official "$CLI_INSTALLER" "$WORK_DIR/cli-install.sh"
+    sudo -u "$SUDO_USER" -H bash < "$WORK_DIR/cli-install.sh"
   fi
   install_manager_command
+  save_state
   install_update_timer
   print_success_summary
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
