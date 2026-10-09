@@ -169,16 +169,16 @@ def approved(url):
     p = urlsplit(url)
     path = unquote(p.path)
     if (p.scheme != 'https' or p.username or p.password or p.port not in (None, 443)
-            or p.fragment or any(c.isspace() or ord(c) < 32 for c in url)
+            or p.fragment or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url)
             or '\\' in path or '..' in path.split('/')):
         raise ValueError('Unsafe download URL: ' + url)
     host = p.hostname
     allowed = (
         (host in ('antigravity.google', 'www.antigravity.google') and
-         (path == '/download' or path.startswith('/_astro/') or path == '/cli/install.sh')) or
+         (path.rstrip('/') == '/download' or path.startswith('/_astro/') or path == '/cli/install.sh')) or
         (host == 'storage.googleapis.com' and path.startswith('/antigravity-public/')) or
-        (host == 'edgedl.me.gvt1.com' and path.startswith('/edgedl/release2/') and '/antigravity/' in path) or
-        (host == 'dl.google.com' and path.startswith('/release2/') and '/antigravity/' in path)
+        (host in ('edgedl.me.gvt1.com', 'dl.google.com') and
+         (path.startswith('/edgedl/release2/') or path.startswith('/release2/')) and '/antigravity/' in path)
     )
     if not allowed:
         raise ValueError('Unapproved download location: ' + url)
@@ -240,7 +240,7 @@ import re, sys
 from pathlib import Path
 text = Path(sys.argv[1]).read_text(errors='replace').replace("\\/", "/")
 platform = re.escape(sys.argv[2])
-raise SystemExit(0 if re.search(r'https?://[^"\s<>)]*/' + platform + r'/Antigravity(?:\.tar\.gz|%20IDE\.tar\.gz)', text) else 1)
+raise SystemExit(0 if re.search(r'https?://[^"\s<>)]*/' + platform + r'/Antigravity(?:\.tar\.gz|(?:\%20|\+|\-| )IDE\.tar\.gz)', text) else 1)
 PY
   then
     printf '%s\n' "$html"
@@ -305,7 +305,7 @@ if product == 'desktop':
 elif product == 'ide':
     marker = 'id:"antigravity-ide"'
     next_marker = 'id:"antigravity-sdk"'
-    filename_patterns = [r'Antigravity%20IDE\.tar\.gz', r'Antigravity\+IDE\.tar\.gz', r'Antigravity IDE\.tar\.gz']
+    filename_patterns = [r'Antigravity%20IDE\.tar\.gz', r'Antigravity\+IDE\.tar\.gz', r'Antigravity-IDE\.tar\.gz', r'Antigravity IDE\.tar\.gz']
     label = 'Antigravity IDE'
 else:
     fail(f'Unknown product: {product}')
@@ -322,7 +322,7 @@ for section in sections:
         pattern = r'https?://[^"\'\s<>)]*/' + re.escape(platform) + r'/' + filename_re
         matches = re.findall(pattern, section)
         if matches:
-            url = matches[-1]
+            url = matches[-1].replace(' ', '%20')
             print(version_from_url(url), url)
             sys.exit(0)
 
@@ -364,12 +364,12 @@ validate_installation() {
   local root="$1" launcher="$2"
   [ -d "$root" ] && [ ! -L "$root" ] && [ -f "$root/$launcher" ] &&
     [ ! -L "$root/$launcher" ] && [ -x "$root/$launcher" ] &&
-    [ -s "$root/.antigravity-linux-version" ]
+    [ -s "$root/.antigravity-linux-version" ] && [ ! -L "$root/.antigravity-linux-version" ]
 }
 
 recover_installation() {
   local root="$1" launcher="$2"
-  if [ ! -e "$root" ] && validate_installation "${root}.previous" "$launcher"; then
+  if [ ! -e "$root" ] && [ ! -L "$root" ] && validate_installation "${root}.previous" "$launcher"; then
     mv "${root}.previous" "$root" || return 1
     warn "Recovered interrupted replacement at $root"
   fi
@@ -378,7 +378,7 @@ recover_installation() {
 safe_replace_dir() {
   local newdir="$1" target="$2" launcher="$3"
   validate_installation "$newdir" "$launcher" || { warn "Invalid staged installation"; return 1; }
-  if [ -e "$target" ]; then
+  if [ -e "$target" ] || [ -L "$target" ]; then
     validate_installation "$target" "$launcher" || { warn "Existing installation is invalid; refusing to discard recovery files"; return 1; }
     rm -rf "${target}.previous" || return 1
     mv "$target" "${target}.previous" || return 1
@@ -386,7 +386,7 @@ safe_replace_dir() {
   if mv "$newdir" "$target" && validate_installation "$target" "$launcher"; then
     return 0
   fi
-  if [ -e "$target" ]; then mv "$target" "$newdir" || return 1; fi
+  if [ -e "$target" ] || [ -L "$target" ]; then mv "$target" "$newdir" || return 1; fi
   recover_installation "$target" "$launcher" || return 1
   warn "Replacement failed; the previous installation was restored when available"
   return 1
@@ -507,7 +507,7 @@ should_install() {
   if [ -n "$current" ]; then
     relation=$(version_relation "$current" "$version") || err "Cannot compare installed release"
     if [ "$relation" = downgrade ] || [ "$relation" = ambiguous ]; then
-      [ "$ALLOW_DOWNGRADE" -eq 1 ] || err "Refusing $relation release change $current -> $version; use --allow-downgrade explicitly"
+      if [ "$ALLOW_DOWNGRADE" -ne 1 ]; then err "Refusing $relation release change $current -> $version; use --allow-downgrade explicitly"; fi
     fi
     if [ "$relation" = same ] && [ "$FORCE" -eq 0 ] && validate_installation "$root" "$launcher"; then
       log "$root $version is already installed."
@@ -627,7 +627,10 @@ install_ide_app() {
   ln -sfn "$root/$install_dir/antigravity-ide" /usr/local/bin/antigravity-ide
   mkdir -p /usr/share/icons/hicolor/512x512/apps /usr/share/applications
   local icon_source="$root/$install_dir/resources/app/resources/linux/code.png"
-  if [ -f "$icon_source" ]; then
+  if [ ! -f "$icon_source" ]; then
+    icon_source=$(find "$root/$install_dir" -maxdepth 6 -name "*.png" 2>/dev/null | grep -E '(code|antigravity)' | head -n 1 || true)
+  fi
+  if [ -n "$icon_source" ] && [ -f "$icon_source" ]; then
     install -m 0644 "$icon_source" /usr/share/icons/hicolor/512x512/apps/antigravity-ide.png
   fi
   cat > /usr/share/applications/antigravity-ide.desktop <<DESKTOP
@@ -784,7 +787,7 @@ install_update_timer() {
   local unit
   for unit in antigravity-linux-update.service antigravity-linux-update.timer; do
     if [ "$(readlink "/etc/systemd/system/$unit" 2>/dev/null || true)" = /dev/null ]; then
-      [ "$AUTO_REQUEST" != 1 ] || err "$unit is masked. Unmask it before explicitly enabling automatic updates."
+      if [ "$AUTO_REQUEST" = 1 ]; then err "$unit is masked. Unmask it before explicitly enabling automatic updates."; fi
       warn "Preserving masked unit $unit"
       return
     fi
@@ -810,7 +813,8 @@ load_state() {
   if [ -f "$STATE_DIR/preferences" ]; then
     HAD_STATE=1
     local key value
-    while IFS='=' read -r key value; do
+    while IFS='=' read -r key value || [ -n "$key" ]; do
+      [ -z "$key" ] || [[ "$key" =~ ^[[:space:]]*# ]] && continue
       [[ "$value" =~ ^[01]$ ]] || err "Invalid saved preference: $key"
       case "$key" in
         desktop) SAVED_DESKTOP="$value" ;;
@@ -822,8 +826,8 @@ load_state() {
     done < "$STATE_DIR/preferences"
   else
     # Migrate existing helper installations without selecting uninstalled apps.
-    [ ! -f /opt/antigravity/.antigravity-linux-version ] || SAVED_DESKTOP=1
-    [ ! -f /opt/antigravity-ide/.antigravity-linux-version ] || SAVED_IDE=1
+    if [ -f /opt/antigravity/.antigravity-linux-version ]; then SAVED_DESKTOP=1; fi
+    if [ -f /opt/antigravity-ide/.antigravity-linux-version ]; then SAVED_IDE=1; fi
     if [ -f /etc/systemd/system/antigravity-linux-update.timer ]; then
       HAD_STATE=1
       if systemd_available && ! systemctl is-enabled --quiet antigravity-linux-update.timer; then AUTO_UPDATE=0; fi
@@ -841,8 +845,8 @@ save_state() {
   # Record every managed installed product; selecting one for a manual update
   # does not silently remove the other from scheduled updates.
   SAVED_DESKTOP=0; SAVED_IDE=0
-  [ ! -f /opt/antigravity/.antigravity-linux-version ] || SAVED_DESKTOP=1
-  [ ! -f /opt/antigravity-ide/.antigravity-linux-version ] || SAVED_IDE=1
+  if [ -f /opt/antigravity/.antigravity-linux-version ]; then SAVED_DESKTOP=1; fi
+  if [ -f /opt/antigravity-ide/.antigravity-linux-version ]; then SAVED_IDE=1; fi
   printf 'desktop=%s\nide=%s\nauto_update=%s\nnautilus=%s\n' \
     "$SAVED_DESKTOP" "$SAVED_IDE" "$AUTO_UPDATE" "$INSTALL_NAUTILUS" > "$STATE_DIR/preferences.new"
   chmod 0644 "$STATE_DIR/preferences.new"
@@ -889,10 +893,13 @@ rollback_product() {
 check_updates() {
   local js="$1" product root resolved version url current relation
   for product in desktop ide; do
-    [ "$product" != desktop ] || [ "$INSTALL_DESKTOP" -eq 1 ] || continue
-    [ "$product" != ide ] || [ "$INSTALL_IDE" -eq 1 ] || continue
-    root=/opt/antigravity
-    [ "$product" != ide ] || root=/opt/antigravity-ide
+    if [ "$product" = desktop ]; then
+      [ "$INSTALL_DESKTOP" -eq 1 ] || continue
+      root=/opt/antigravity
+    else
+      [ "$INSTALL_IDE" -eq 1 ] || continue
+      root=/opt/antigravity-ide
+    fi
     resolved=$(resolve_download_from_bundle "$js" "$product") || err "Could not resolve $product download"
     read -r version url <<< "$resolved"
     if [ "$DO_PRINT_DOWNLOADS" -eq 1 ]; then
@@ -908,14 +915,17 @@ check_updates() {
 
 print_status() {
   log "Antigravity Linux status"
+  local ver
   if [ -x /usr/local/bin/antigravity ]; then
-    log "- Antigravity 2.0: installed ($(installed_version /opt/antigravity/.antigravity-linux-version))"
+    ver=$(installed_version /opt/antigravity/.antigravity-linux-version)
+    log "- Antigravity 2.0: installed (${ver:-unknown})"
     log "  Command: /usr/local/bin/antigravity"
   else
     log "- Antigravity 2.0: not installed by this helper"
   fi
   if [ -x /usr/local/bin/antigravity-ide ]; then
-    log "- Antigravity IDE: installed ($(installed_version /opt/antigravity-ide/.antigravity-linux-version))"
+    ver=$(installed_version /opt/antigravity-ide/.antigravity-linux-version)
+    log "- Antigravity IDE: installed (${ver:-unknown})"
     log "  Command: /usr/local/bin/antigravity-ide"
   else
     log "- Antigravity IDE: not installed by this helper"
@@ -929,20 +939,22 @@ print_status() {
   log "- Automatic installation preference: $AUTO_UPDATE (1=enabled, 0=disabled)"
   local timer_state=unavailable
   if systemd_available; then timer_state=$(systemctl is-enabled antigravity-linux-update.timer 2>/dev/null || true); fi
-  log "- Timer: $timer_state"
+  log "- Timer: ${timer_state:-unavailable}"
   local helper=/usr/local/lib/antigravity-linux/install.sh digest
   if [ -f "$helper" ]; then
     digest=$(sha256sum "$helper"); log "- Helper revision (SHA-256): ${digest%% *}"
   fi
-  local item root
+  local item val root prev
   for item in last-success last-failure update-last-success update-last-failure; do
-    log "- $item: $(installed_version "$STATE_DIR/$item")"
+    val=$(installed_version "$STATE_DIR/$item")
+    log "- $item: ${val:-none}"
   done
   for root in /opt/antigravity /opt/antigravity-ide; do
     if [ -f "$root/.antigravity-linux-version" ]; then
       log "- $root verification: $(installed_version "$root/.antigravity-linux-verification")"
       log "  Archive SHA-256: $(installed_version "$root/.antigravity-linux-sha256")"
-      log "  Previous release: $(installed_version "${root}.previous/.antigravity-linux-version")"
+      prev=$(installed_version "${root}.previous/.antigravity-linux-version")
+      log "  Previous release: ${prev:-none}"
     fi
   done
 }
@@ -992,7 +1004,7 @@ main() {
   load_state
   if [ "$DO_STATUS" -eq 1 ]; then print_status; return; fi
   if [ "$ACTION" = check ] || [ "$DO_PRINT_DOWNLOADS" -eq 1 ]; then
-    [ "$INSTALL_DESKTOP$INSTALL_IDE" != 00 ] || err "No managed products. Select --desktop, --ide or --all to check."
+    if [ "$INSTALL_DESKTOP$INSTALL_IDE" = "00" ]; then err "No managed products. Select --desktop, --ide or --all to check."; fi
     need python3
     WORK_DIR=$(mktemp -d)
     trap finish_operation EXIT
@@ -1024,13 +1036,13 @@ main() {
   recover_installation /opt/antigravity-ide Antigravity-IDE/antigravity-ide
 
   if [ "$ACTION" = configure ]; then
-    [ -f /usr/local/lib/antigravity-linux/install.sh ] || err "Install the helper before configuring automatic updates"
+    if [ ! -f /usr/local/lib/antigravity-linux/install.sh ]; then err "Install the helper before configuring automatic updates"; fi
     save_state
     install_update_timer
     log "Automatic installation preference saved: $AUTO_UPDATE"
     return
   fi
-  [ "$INSTALL_DESKTOP$INSTALL_IDE" != 00 ] || err "No managed products. Run install with --desktop or --ide first."
+  if [ "$INSTALL_DESKTOP$INSTALL_IDE" = "00" ]; then err "No managed products. Run install with --desktop or --ide first."; fi
   if [ "$ACTION" = rollback ]; then
     # Validate all requested rollback targets before changing either product.
     if [ "$INSTALL_DESKTOP" -eq 1 ]; then validate_installation /opt/antigravity.previous "$DESKTOP_TOP/antigravity" || err "No previous desktop release"; fi
@@ -1053,7 +1065,7 @@ main() {
   if [ "$INSTALL_IDE" -eq 1 ]; then install_ide_app "$WORK_DIR" "$js"; fi
   install_nautilus_extension
   if [ "$INSTALL_CLI" -eq 1 ]; then
-    [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || err "--cli requires a non-root invoking user via sudo"
+    if [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = root ]; then err "--cli requires a non-root invoking user via sudo"; fi
     log "Running Google's official CLI installer as $SUDO_USER..."
     fetch_official "$CLI_INSTALLER" "$WORK_DIR/cli-install.sh"
     sudo -u "$SUDO_USER" -H bash < "$WORK_DIR/cli-install.sh"

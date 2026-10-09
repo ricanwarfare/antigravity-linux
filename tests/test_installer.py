@@ -328,6 +328,35 @@ main
         for path in (REPO/'systemd').glob('*'):
             self.assertEqual((destination/path.name).read_text().replace(str(self.root), ''), path.read_text())
 
+    def test_download_url_trailing_slash_and_cdn_paths_accepted(self):
+        self.run_shell('validate_url "https://antigravity.google/download/"')
+        self.run_shell('validate_url "https://dl.google.com/edgedl/release2/test/antigravity/stable/1.0.0/linux-x64/Antigravity.tar.gz"')
+        self.run_shell('validate_url "https://edgedl.me.gvt1.com/release2/test/antigravity/stable/1.0.0/linux-x64/Antigravity.tar.gz"')
+
+    def test_ide_download_resolves_with_unencoded_space_and_hyphen(self):
+        html = '<a href="https://edgedl.me.gvt1.com/edgedl/release2/test/antigravity/stable/1.2.3/linux-x64/Antigravity IDE.tar.gz">IDE</a>'
+        self.page.write_text(html)
+        res = self.run_shell('resolve_ide_download "$TEST_PAGE"').stdout.strip()
+        self.assertIn('%20IDE.tar.gz', res)
+        html_hyphen = '<a href="https://edgedl.me.gvt1.com/edgedl/release2/test/antigravity/stable/1.2.3/linux-x64/Antigravity-IDE.tar.gz">IDE</a>'
+        self.page.write_text(html_hyphen)
+        res_hyphen = self.run_shell('resolve_ide_download "$TEST_PAGE"').stdout.strip()
+        self.assertIn('Antigravity-IDE.tar.gz', res_hyphen)
+
+    def test_preferences_parsing_handles_comments_and_missing_newline(self):
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / 'preferences').write_bytes(b'# User config\n\ndesktop=1\nauto_update=0\nide=1\nnautilus=0')
+        r = self.run_shell('load_state; echo "$SAVED_DESKTOP $SAVED_IDE $AUTO_UPDATE $INSTALL_NAUTILUS"')
+        self.assertEqual(r.stdout.strip(), '1 1 0 0')
+
+    def test_broken_symlink_at_target_is_rejected_gracefully(self):
+        broken = self.desktop
+        broken.symlink_to(self.root / 'nonexistent')
+        self.assertTrue(broken.is_symlink())
+        self.assertFalse(broken.exists())
+        r = self.run_shell('main', ['--desktop'], mocks=True, ok=False)
+        self.assertIn('Existing installation is invalid', r.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()
